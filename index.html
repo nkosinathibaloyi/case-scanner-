@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<!--
+  STAGING AREA VIEWER - single file (HTML + CSS + JavaScript). No backend, no build step.
+  Shows every staging area and the cases (with registers) inside each one.
+  GitHub Pages: save as index.html in a repository, then Settings > Pages > deploy from branch.
+  HTTPS (which Pages provides) is required by Chrome for live camera scanning.
+  OFFLINE: no external libraries. Excel/CSV reading and writing are built in; QR reading uses the browser's own
+  BarcodeDetector (Chrome on Android has it). Optional sw.js next to this file lets Pages cache the app for offline use.
+  Staging areas are fixed: Stage 1 to Stage 26 (values like 5, Stage 5 or STG-5 all map to Stage 5).
+  Expected Excel headers (any case, spaces/underscores ignored): Staging Area, Case No, Register,
+  Part Number, Description, Quantity, Weight.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e9aa0">
+<title>Staging Area Viewer</title>
+<style>
+/* ===== THEME: colour tokens, bright teal/blue with amber accent ===== */
+:root{color-scheme:light;--bg:#eef8f7;--sf:#fff;--ink:#12304a;--mut:#5b7388;--line:#d3e7e6;--ac:#0e9aa0;--ac2:#f59e0b;--bl:#2563eb;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Segoe UI",system-ui,-apple-system,sans-serif}
+/* ===== HEADER AND BUTTONS ===== */
+header{background:linear-gradient(100deg,#0e9aa0,#2563eb);color:#fff;padding:14px 16px;border-bottom:4px solid var(--ac2)}
+h1{margin:0;font:700 21px Georgia,serif}header p{margin:2px 0 10px;font-size:12px;opacity:.85}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.btn{border:1px solid #fff;background:transparent;color:#fff;padding:11px 14px;border-radius:10px;font:600 14px inherit;cursor:pointer;text-align:center}
+.btn.solid{background:#fff;color:#0b6f75}.btn input{display:none}
+.btn.ghost{border-color:var(--line);color:var(--ink)}.btn.pri{background:var(--ac);border-color:var(--ac);color:#fff}
+/* ===== LAYOUT ===== */
+main{max-width:1200px;margin:0 auto;padding:12px}
+#msg{font-size:12px;color:var(--mut);margin:0 0 10px;min-height:1.3em}
+.sum{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
+.tile,.panel,.card{background:var(--sf);border:1px solid var(--line);border-radius:12px;padding:12px}
+.tile b{display:block;font:700 24px Georgia,serif}.tile span{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--mut)}
+#q{width:100%;padding:13px;border:1px solid var(--line);border-radius:10px;font:inherit;font-size:16px;margin-bottom:10px;background:var(--sf);color:var(--ink)}
+.panel{margin-bottom:10px}#scanp[hidden]{display:none}
+#sv{width:100%;max-height:45vh;object-fit:cover;border-radius:10px;background:#0b2230;display:block;margin-bottom:8px}
+.cols{display:grid;grid-template-columns:300px 1fr;gap:12px;align-items:start}
+/* ===== STAGING AREA LIST ===== */
+#areas{display:grid;gap:8px;max-height:75vh;overflow:auto}
+.area{text-align:left;border:1px solid var(--line);background:var(--sf);border-radius:12px;padding:12px;cursor:pointer;color:var(--ink);font:inherit;border-left:5px solid var(--ac)}
+.area.on{background:var(--ac);color:#fff;border-color:var(--ac);border-left-color:var(--ac2)}
+.area.none{opacity:.55}.area.on.none{opacity:1}
+.area b{display:block;font-size:16px}.area span{font-size:12px;opacity:.85}
+/* ===== CASE DETAIL ===== */
+.dh{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.dh h2{margin:0;font:700 20px Georgia,serif}.dh span{color:var(--mut);font-size:13px}
+.card{margin-top:8px;border-left:5px solid var(--ac2)}.card.hl{outline:3px solid var(--bl)}
+.ch{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:4px}.ch span{color:var(--mut);font-size:12px}
+.rg{display:grid;grid-template-columns:1fr 1.2fr 1.6fr auto;gap:8px;font-size:13px;padding:5px 0;border-top:1px dashed var(--line)}
+.empty{color:var(--mut);padding:20px;text-align:center}
+/* ===== ASSIGN PANEL ===== */
+.panel h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--mut)}
+.af{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.af label{font-size:11px;color:var(--mut);display:flex;flex-direction:column;gap:3px}
+.af input,.af select{border:1px solid var(--line);border-radius:10px;padding:12px;font:inherit;font-size:16px;background:var(--bg);color:var(--ink);min-width:0}
+.hint{margin:8px 0 0;font-size:12px;color:var(--mut)}
+/* ===== MOBILE ===== */
+@media(max-width:800px){.af{grid-template-columns:1fr}.cols{grid-template-columns:1fr}#areas{max-height:none;grid-template-columns:1fr 1fr}.sum{grid-template-columns:1fr 1fr}.rg{grid-template-columns:1fr auto}.rg span:nth-child(2),.rg span:nth-child(3){grid-column:1/3;color:var(--mut)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Staging Area Viewer</h1>
+  <p>Stage 1 to Stage 26: browse the cases and registers in each staging area</p>
+  <div class="row">
+    <label class="btn solid">Upload Excel / CSV<input type="file" id="file" accept=".xlsx,.xlsm,.csv"></label>
+    <button class="btn" id="scan">Scan QR</button>
+    <button class="btn" id="dlx">Download Excel</button>
+    <button class="btn" id="demo">Sample data</button>
+    <button class="btn" id="clear">Clear data</button>
+  </div>
+</header>
+<main>
+  <p id="msg"></p>
+  <section class="sum" id="sum"></section>
+  <input id="q" type="search" placeholder="Search area, case, register or part (or scan)" autocomplete="off">
+  <!-- Scanner panel: live camera, photo fallback, status text -->
+  <section class="panel" id="scanp" hidden>
+    <video id="sv" playsinline muted></video><canvas id="cv" hidden></canvas>
+    <div class="row">
+      <label class="btn ghost">Take photo<input type="file" accept="image/*" capture="environment" id="ph"></label>
+      <button class="btn ghost" id="sclose">Close scanner</button>
+    </div>
+    <p id="sm" style="margin:8px 0 0;font-size:13px;color:var(--mut)"></p>
+  </section>
+  <!-- Assign panel: type or scan the case, register and stage, then tap Assign -->
+  <section class="panel" id="asg">
+    <h3>Assign a case to a stage</h3>
+    <div class="af">
+      <label>Case number<input id="acs" placeholder="Type or scan" autocomplete="off"></label>
+      <label>Register<input id="areg" placeholder="Optional" autocomplete="off"></label>
+      <label>Stage<select id="ast"></select></label>
+    </div>
+    <div class="row"><button class="btn pri" id="asgn">Assign</button><button class="btn ghost" id="asgscan">Scan case</button></div>
+    <p class="hint">Leave Register empty to move the whole case. Scanning a case fills these boxes; scanning a stage picks the stage.</p>
+  </section>
+  <div class="cols"><nav id="areas" aria-label="Staging areas"></nav><section id="detail"></section></div>
+</main>
+<script>
+/* ===== 1. HELPERS AND ERROR HANDLING ===== */
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const norm=s=>String(s).toLowerCase().replace(/[^a-z0-9]/g,'');
+const nf=n=>Math.round(n).toLocaleString();
+const nat=(a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true});
+const num=v=>{const n=parseFloat(String(v??'').replace(',','.'));return isNaN(n)?0:n};
+const say=t=>{$('msg').textContent=t};
+/* Show uncaught errors in the page instead of failing silently */
+window.addEventListener('error',e=>say('Error: '+e.message));
+window.addEventListener('unhandledrejection',e=>say('Error: '+(e.reason&&e.reason.message||e.reason)));
+
+/* ===== 2. STATE AND COLUMN NAMES ===== */
+/* DATA = one record per Excel row; sel = open staging area; hl = case to highlight after a scan */
+let DATA=[],sel=null,hl=null;
+const AL={stage:['stagingarea','staging','stagearea','stage','bay','location','area'],cs:['caseno','case','casenumber','packageno'],
+reg:['register','registerno','regno'],part:['partnumber','partno','part','vwpart'],desc:['description','partdescription','desc'],
+qty:['quantity','qty'],wt:['weight','weightkg','wt']};
+const pick=(o,a)=>{for(const k of a)if(o[k]!==undefined&&o[k]!==null&&o[k]!=='')return o[k];return null};
+
+/* ===== FIXED STAGING AREAS: Stage 1 to Stage 26 (always listed, even when empty) ===== */
+const STAGES=Array.from({length:26},(_,i)=>'Stage '+(i+1));
+let badStage=0; /* rows whose staging area is not 1 to 26 in the current file */
+/* "5", "05", "Stage 5", "STG-5", "bay 5" -> "Stage 5"; anything outside 1-26 -> null */
+function stageName(v){
+  if(v==null)return null;
+  const m=String(v).trim().match(/^(?:stage|stg|staging|bay|area)?[\s_-]*0*(\d{1,2})$/i),n=m?+m[1]:0;
+  return n>=1&&n<=26?'Stage '+n:null;
+}
+const nStage=stageName;
+function normStage(v){const s=stageName(v);if(!s&&v!=null&&String(v).trim()!=='')badStage++;return s||'Unassigned'}
+
+/* ===== 3. LOAD DATA: map rows to records, remember them in localStorage ===== */
+function loadRows(rows,label){
+  badStage=0;
+  const recs=rows.map(r=>{const o={};for(const k in r)o[norm(k)]=r[k];
+    return{stage:normStage(pick(o,AL.stage)),cs:String(pick(o,AL.cs)??'(no case)'),reg:pick(o,AL.reg),
+      part:pick(o,AL.part),desc:pick(o,AL.desc),qty:num(pick(o,AL.qty)),wt:num(pick(o,AL.wt))}});
+  if(!recs.length)throw new Error('The file has no data rows.');
+  const have=new Set(Object.keys(rows[0]).map(norm));
+  const miss=['stage','cs','reg'].filter(k=>!AL[k].some(a=>have.has(a)));
+  DATA=recs;sel=null;hl=null;
+  try{localStorage.setItem('stagingData',JSON.stringify(DATA))}catch(e){/* storage full or blocked: ignore */}
+  say(label+': '+nf(recs.length)+' rows loaded.'+(miss.length?' Columns not found: '+miss.join(', ')+'.':'')+(badStage?' '+badStage+' rows have a staging area outside Stage 1 to 26 and are shown as Unassigned.':''));
+  render();
+}
+
+/* ===== 4. RENDER: summary tiles, staging area list, case detail ===== */
+/* Group rows as { stage: { case: [rows] } } */
+function group(rows){const m={};rows.forEach(r=>{const s=m[r.stage]=m[r.stage]||{};(s[r.cs]=s[r.cs]||[]).push(r)});return m}
+const regCount=rows=>new Set(rows.map(r=>r.reg).filter(v=>v!=null)).size;
+function render(){
+  const q=$('q').value.trim().toLowerCase();
+  const rows=q?DATA.filter(r=>[r.stage,r.cs,r.reg,r.part,r.desc].some(v=>String(v??'').toLowerCase().includes(q))):DATA;
+  const by=group(rows),all=group(DATA);
+  /* always list Stage 1 to Stage 26; while searching, only areas with matches */
+  const names=STAGES.concat(by['Unassigned']?['Unassigned']:[]).filter(n=>!q||by[n]);
+  /* summary tiles always describe the whole dataset */
+  const T=[['Stages in use (of 26)',STAGES.filter(s=>all[s]).length],['Cases',new Set(DATA.map(r=>r.stage+'|'+r.cs)).size],['Registers',regCount(DATA)],['Units',DATA.reduce((s,r)=>s+r.qty,0)]];
+  $('sum').innerHTML=T.map(t=>`<div class="tile"><b>${nf(t[1])}</b><span>${t[0]}</span></div>`).join('');
+  if(!names.includes(sel))sel=names.find(n=>by[n])||names[0]||null;
+  /* staging area cards */
+  $('areas').innerHTML=names.length?names.map(n=>{const s=by[n]||{},rs=[].concat(...Object.values(s));
+    return`<button class="area${n===sel?' on':''}${by[n]?'':' none'}" data-s="${esc(n)}"><b>${esc(n)}</b><span>${Object.keys(s).length} cases, ${regCount(rs)} registers, ${nf(rs.reduce((t,r)=>t+r.qty,0))} units</span></button>`}).join(''):'<div class="empty">No staging areas match.</div>';
+  /* case detail for the selected area */
+  if(!sel){$('detail').innerHTML='<div class="empty">Upload a file or load the sample data.</div>';return}
+  const cases=by[sel]||{},ck=Object.keys(cases).sort(nat),rs=[].concat(...Object.values(cases));
+  $('detail').innerHTML=`<div class="dh"><h2>${esc(sel)}</h2><span>${ck.length} cases, ${regCount(rs)} registers</span><div class="row"><button class="btn pri" id="dlsx">Download Excel</button><button class="btn pri" id="dl">Download CSV</button></div></div>`+
+    ck.slice(0,200).map(c=>{const a=cases[c];
+      return`<div class="card${c===hl?' hl':''}" data-c="${esc(c)}"><div class="ch"><b>Case ${esc(c)}</b><span>${nf(a.reduce((t,r)=>t+r.qty,0))} units, ${a.reduce((t,r)=>t+r.wt,0).toFixed(1)} kg</span></div>`+
+      a.map(r=>`<div class="rg"><span>Reg ${esc(r.reg??'-')}</span><span>${esc(r.part??'')}</span><span>${esc(r.desc??'')}</span><span>qty ${nf(r.qty)}</span></div>`).join('')+'</div>'}).join('')+
+    (ck.length>200?`<p class="empty">Showing 200 of ${ck.length} cases. Use search to narrow down.</p>`:'')+(ck.length?'':'<p class="empty">No cases in this staging area.</p>');
+  if(hl){const el=[...document.querySelectorAll('.card')].find(c=>c.dataset.c===hl);if(el)el.scrollIntoView({behavior:'smooth',block:'center'})}
+}
+
+/* ===== 5. EVENTS: pick an area, search, download ===== */
+$('areas').onclick=e=>{const b=e.target.closest('.area');if(!b)return;sel=b.dataset.s;hl=null;render();
+  if(matchMedia('(max-width:800px)').matches)$('detail').scrollIntoView({behavior:'smooth',block:'start'})};
+$('q').oninput=()=>{hl=null;render()};
+$('q').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();const t=$('q').value.trim();if(t&&handleScan(t))$('q').value=''}}; /* handheld scanners type text + Enter */
+$('detail').onclick=e=>{if(e.target.id==='dl')downloadCsv();if(e.target.id==='dlsx')downloadXlsx(sel)};
+$('dlx').onclick=()=>downloadXlsx(null);
+/* CSV of the open staging area (plain browser download, works on GitHub Pages) */
+function downloadCsv(){
+  try{
+    const cell=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+    const rows=DATA.filter(r=>r.stage===sel);
+    const csv=[['Staging Area','Case No','Register','Part Number','Description','Quantity','Weight'].map(cell).join(',')]
+      .concat(rows.map(r=>[r.stage,r.cs,r.reg,r.part,r.desc,r.qty,r.wt].map(cell).join(','))).join('\r\n');
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+    a.download='staging_'+sel.replace(/[^\w-]+/g,'_')+'.csv';document.body.appendChild(a);a.click();a.remove();
+  }catch(err){say('Download failed: '+err.message)}
+}
+
+/* ===== 6. BUILT-IN EXCEL / CSV SUPPORT (no libraries) ===== */
+/* --- CSV reader: handles quotes, and comma / semicolon / tab separators --- */
+function parseCsv(text){
+  text=text.replace(/^\uFEFF/,'');
+  const first=text.split(/\r?\n/)[0]||'';
+  const d=[',',';','\t'].map(c=>[c,first.split(c).length]).sort((a,b)=>b[1]-a[1])[0][0];
+  const rows=[];let row=[],f='',q=false;
+  for(let i=0;i<text.length;i++){const c=text[i];
+    if(q){if(c==='"'){if(text[i+1]==='"'){f+='"';i++}else q=false}else f+=c}
+    else if(c==='"')q=true;
+    else if(c===d){row.push(f);f=''}
+    else if(c==='\n'||c==='\r'){if(c==='\r'&&text[i+1]==='\n')i++;row.push(f);f='';rows.push(row);row=[]}
+    else f+=c}
+  if(f!==''||row.length){row.push(f);rows.push(row)}
+  return rowsToObjects(rows);
+}
+/* First row = headers; every other row becomes an object keyed by header */
+function rowsToObjects(rows){
+  rows=rows.filter(r=>r.some(v=>v!=null&&String(v).trim()!==''));
+  if(rows.length<2)return [];
+  const head=rows[0].map((h,i)=>String(h??'').trim()||'Column'+(i+1));
+  return rows.slice(1).map(r=>{const o={};head.forEach((h,i)=>{o[h]=(r[i]===undefined||r[i]==='')?null:r[i]});return o});
+}
+/* --- XLSX reader: an .xlsx is a zip of XML files; inflate with the browser's DecompressionStream --- */
+async function readXlsx(buf){
+  const u8=new Uint8Array(buf),dv=new DataView(buf),dec=new TextDecoder();
+  let e=u8.length-22;while(e>=0&&dv.getUint32(e,true)!==0x06054b50)e--;
+  if(e<0)throw new Error('This is not a valid .xlsx file.');
+  const n=dv.getUint16(e+10,true);let p=dv.getUint32(e+16,true);const files={};
+  for(let i=0;i<n&&dv.getUint32(p,true)===0x02014b50;i++){ /* central directory entries */
+    const nl=dv.getUint16(p+28,true),xl=dv.getUint16(p+30,true),cl=dv.getUint16(p+32,true);
+    files[dec.decode(u8.subarray(p+46,p+46+nl))]={method:dv.getUint16(p+10,true),size:dv.getUint32(p+20,true),off:dv.getUint32(p+42,true)};
+    p+=46+nl+xl+cl;
+  }
+  async function text(name){
+    const f=files[name];if(!f)return null;
+    const start=f.off+30+dv.getUint16(f.off+26,true)+dv.getUint16(f.off+28,true),data=u8.subarray(start,start+f.size);
+    if(f.method===0)return dec.decode(data);
+    if(f.method!==8)throw new Error('Unsupported zip compression.');
+    if(typeof DecompressionStream==='undefined')throw new Error('This browser cannot open .xlsx files. Save the sheet as CSV, or use Chrome.');
+    return await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+  }
+  const xml=t=>new DOMParser().parseFromString(t,'application/xml'),tag=(el,t)=>Array.from(el.getElementsByTagNameNS('*',t));
+  const ssx=await text('xl/sharedStrings.xml');
+  const shared=ssx?tag(xml(ssx),'si').map(si=>tag(si,'t').map(t=>t.textContent).join('')):[];
+  const sheet=Object.keys(files).filter(k=>/^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort(nat)[0];
+  if(!sheet)throw new Error('No worksheet found in the file.');
+  const rows=[];
+  tag(xml(await text(sheet)),'row').forEach(re=>{
+    const arr=[];
+    tag(re,'c').forEach(c=>{
+      const m=(c.getAttribute('r')||'').match(/^([A-Z]+)/),t=c.getAttribute('t');let ci=arr.length;
+      if(m){ci=0;for(const ch of m[1])ci=ci*26+ch.charCodeAt(0)-64;ci--}
+      const v=tag(c,'v')[0];let val=null;
+      if(t==='inlineStr')val=tag(c,'t').map(x=>x.textContent).join('');
+      else if(v){const raw=v.textContent;val=t==='s'?shared[+raw]:(t==='str'||t==='e')?raw:t==='b'?raw==='1':(isNaN(+raw)?raw:+raw)}
+      if(val!==null)arr[ci]=val;
+    });
+    rows.push(arr);
+  });
+  return rowsToObjects(rows);
+}
+/* --- XLSX writer: builds the zip by hand (stored, uncompressed) with inline strings --- */
+const CRC=(()=>{const t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+const crc32=u=>{let c=0xFFFFFFFF;for(let i=0;i<u.length;i++)c=CRC[(c^u[i])&255]^(c>>>8);return(c^0xFFFFFFFF)>>>0};
+function makeZip(files){ /* files = [[name, text], ...] */
+  const enc=new TextEncoder(),parts=[],cd=[];let off=0;
+  files.forEach(([name,text])=>{
+    const nb=enc.encode(name),d=enc.encode(text),crc=crc32(d);
+    const lh=new DataView(new ArrayBuffer(30));
+    lh.setUint32(0,0x04034b50,true);lh.setUint16(4,20,true);lh.setUint16(6,0x0800,true);lh.setUint16(12,0x21,true);
+    lh.setUint32(14,crc,true);lh.setUint32(18,d.length,true);lh.setUint32(22,d.length,true);lh.setUint16(26,nb.length,true);
+    parts.push(new Uint8Array(lh.buffer),nb,d);
+    const ch=new DataView(new ArrayBuffer(46));
+    ch.setUint32(0,0x02014b50,true);ch.setUint16(4,20,true);ch.setUint16(6,20,true);ch.setUint16(8,0x0800,true);ch.setUint16(14,0x21,true);
+    ch.setUint32(16,crc,true);ch.setUint32(20,d.length,true);ch.setUint32(24,d.length,true);ch.setUint16(28,nb.length,true);ch.setUint32(42,off,true);
+    cd.push(new Uint8Array(ch.buffer),nb);off+=30+nb.length+d.length;
+  });
+  const end=new DataView(new ArrayBuffer(22));
+  end.setUint32(0,0x06054b50,true);end.setUint16(8,files.length,true);end.setUint16(10,files.length,true);
+  end.setUint32(12,cd.reduce((t,u)=>t+u.length,0),true);end.setUint32(16,off,true);
+  return new Blob([...parts,...cd,new Uint8Array(end.buffer)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+const xe=v=>String(v??'').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function colName(i){let s='';for(i++;i>0;i=Math.floor((i-1)/26))s=String.fromCharCode(65+(i-1)%26)+s;return s}
+function sheetXml(rows){ /* rows = array of arrays; numbers stay numbers, everything else is text */
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'+
+    rows.map((r,i)=>'<row r="'+(i+1)+'">'+r.map((v,j)=>{if(v==null||v==='')return'';const ref=colName(j)+(i+1);
+      return typeof v==='number'&&isFinite(v)?'<c r="'+ref+'"><v>'+v+'</v></c>':'<c r="'+ref+'" t="inlineStr"><is><t xml:space="preserve">'+xe(v)+'</t></is></c>'}).join('')+'</row>').join('')+'</sheetData></worksheet>';
+}
+function xlsxBlob(sheets){ /* sheets = [[name, rows], ...] */
+  const H='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',R='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const files=[['[Content_Types].xml',H+'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+
+      sheets.map((_,i)=>'<Override PartName="/xl/worksheets/sheet'+(i+1)+'.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join('')+'</Types>'],
+    ['_rels/.rels',H+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="'+R+'/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ['xl/workbook.xml',H+'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="'+R+'"><sheets>'+sheets.map((s,i)=>'<sheet name="'+xe(s[0])+'" sheetId="'+(i+1)+'" r:id="rId'+(i+1)+'"/>').join('')+'</sheets></workbook>'],
+    ['xl/_rels/workbook.xml.rels',H+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+sheets.map((_,i)=>'<Relationship Id="rId'+(i+1)+'" Type="'+R+'/worksheet" Target="worksheets/sheet'+(i+1)+'.xml"/>').join('')+'</Relationships>']];
+  sheets.forEach((s,i)=>files.push(['xl/worksheets/sheet'+(i+1)+'.xml',sheetXml(s[1])]));
+  return makeZip(files);
+}
+/* Excel download. only = one staging area, or null for everything.
+   Sheet 1 "Cases and registers": every row (so the file can be uploaded again). Sheet 2 "Summary": one line per staging area (Stage 1 to 26). */
+function downloadXlsx(only){
+  try{
+    const rows=only?DATA.filter(r=>r.stage===only):DATA;
+    if(!rows.length){say('Nothing to download yet.');return}
+    const g=group(rows),names=only?[only]:STAGES.concat(g['Unassigned']?['Unassigned']:[]);
+    const sum=(a,k)=>a.reduce((t,r)=>t+r[k],0);
+    const summary=[['Staging Area','Cases','Registers','Units','Weight (kg)']].concat(names.map(n=>{const s=g[n]||{},rs=[].concat(...Object.values(s));
+      return[n,Object.keys(s).length,regCount(rs),sum(rs,'qty'),+sum(rs,'wt').toFixed(1)]}));
+    const detail=[['Staging Area','Case No','Register','Part Number','Description','Quantity','Weight']].concat(rows.map(r=>[r.stage,r.cs,r.reg,r.part,r.desc,r.qty,r.wt]));
+    const blob=xlsxBlob([['Cases and registers',detail],['Summary',summary]]);
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=only?'staging_'+only.replace(/[^\w-]+/g,'_')+'.xlsx':'staging_areas_all.xlsx';
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1500);
+    say('Excel file downloaded: '+a.download);
+  }catch(err){say('Excel download failed: '+err.message)}
+}
+/* Upload: .xlsx / .xlsm (first sheet) or .csv */
+$('file').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  try{
+    const ext=(f.name.split('.').pop()||'').toLowerCase();let rows;
+    if(ext==='csv'||ext==='txt')rows=parseCsv(await f.text());
+    else if(ext==='xlsx'||ext==='xlsm')rows=await readXlsx(await f.arrayBuffer());
+    else throw new Error('Use an .xlsx or .csv file (older .xls files: save as .xlsx first).');
+    loadRows(rows,f.name);
+  }catch(err){say('Could not use that file: '+err.message)}
+};
+
+/* ===== 7. SAMPLE DATA ===== */
+function sample(){
+  let s=5;const rnd=()=>(s=(s*16807)%2147483647)/2147483647,pk=a=>a[Math.floor(rnd()*a.length)];
+  const parts=[['N1WZ 2603100 BM','GLASS WINDSHIELD'],['2HJ 845 099 CA','DOOR GLASS'],['5Q0 807 221 GRU','BUMPER COVER'],['6R0 941 007','HEADLAMP'],['1K0 615 301 AA','BRAKE DISC'],['3C0 857 507','MIRROR']];
+  const rows=[];
+  for(let i=0;i<160;i++){const p=pk(parts),q=1+Math.floor(rnd()*6),c=Math.floor(i/2);
+    rows.push({'Staging Area':c%9===0?'':'Stage '+(1+c%26),'Case No':4470000+c,Register:805300+i,'Part Number':p[0],Description:p[1],Quantity:q,Weight:+(q*(2+rnd()*5)).toFixed(1)})}
+  loadRows(rows,'Sample data');
+}
+$('demo').onclick=sample;
+$('clear').onclick=()=>{try{localStorage.removeItem('stagingData')}catch(e){}DATA=[];sel=null;hl=null;$('q').value='';say('Data cleared.');render()};
+
+/* ===== 8. QR SCANNING ===== */
+/* A scan can be: a staging area name, a case number, or text containing one of them (or key:value / JSON). */
+let stream=null,timer=0,lastV='',lastT=0;
+const detector=('BarcodeDetector' in window)?(()=>{try{return new BarcodeDetector({formats:['qr_code']})}catch(e){return null}})():null;
+const sm=t=>{$('sm').textContent=t};
+function kvOf(t){const kv={};let o=null;try{o=JSON.parse(t)}catch(e){}
+  if(o&&typeof o==='object')for(const k in o)kv[norm(k)]=o[k];
+  else t.split(/[\r\n|;,\t]+/).forEach(p=>{const m=p.match(/^\s*([^:=]+?)\s*[:=]\s*(.+?)\s*$/);if(m)kv[norm(m[1])]=m[2]});
+  return kv}
+/* Find the matching area/case, open it and highlight. Returns true when something matched. */
+function handleScan(text){
+  const t=String(text).trim(),up=t.toUpperCase(),kv=kvOf(t);
+  const cases=[...new Set(DATA.map(r=>r.cs))];
+  const eq=(a,v)=>String(a).trim().toUpperCase()===String(v).trim().toUpperCase();
+  const kS=pick(kv,AL.stage),kC=pick(kv,AL.cs);
+  let st=null,cs=null;
+  if(kS!=null)st=nStage(kS);
+  if(kC!=null)cs=cases.find(c=>eq(c,kC));
+  if(!st&&!cs){cs=cases.find(c=>eq(c,t));if(!cs)st=nStage(t)}
+  if(!st&&!cs)cs=cases.find(c=>c.length>=4&&up.includes(c.toUpperCase()));
+  if(!st&&!cs){const m=up.match(/(?:STAGE|STG)\s*[-_ ]?0*(\d{1,2})\b/);if(m)st=nStage(m[1])}
+  if(cs&&!st)st=(DATA.find(r=>r.cs===cs)||{}).stage;
+  if(!st){ /* unknown text: put it in the Case number box so it can be assigned as a new case */
+    $('acs').value=t.slice(0,60);
+    const m='“'+t.slice(0,40)+'” is not in the data. It is in the Case number box: pick a stage and tap Assign to add it.';sm(m);say(m);return false}
+  $('q').value='';sel=st;hl=cs||null;render();
+  /* fill the assign form: a scanned case fills Case number (and Register when it has just one); a scanned stage picks the Stage */
+  if(cs){$('acs').value=cs;const rr=DATA.filter(r=>r.cs===cs&&r.reg!=null);$('areg').value=rr.length===1?rr[0].reg:''}
+  else if(STAGES.includes(st))$('ast').value=st;
+  if(navigator.vibrate)navigator.vibrate(60);
+  say(cs?'Case '+cs+' is in '+st+'.':'Showing '+st+'.');return true;
+}
+/* Decode a QR code from a video frame, image bitmap or canvas source */
+async function decode(src,w,h){
+  const c=$('cv'),x=c.getContext('2d',{willReadFrequently:true});c.width=w;c.height=h;x.drawImage(src,0,0,w,h);
+  if(detector){try{const r=await detector.detect(c);if(r.length)return r[0].rawValue}catch(e){/* fall through to jsQR */}}
+  return null;
+}
+function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}clearTimeout(timer);$('sv').srcObject=null}
+async function loop(){
+  if(!stream)return;const v=$('sv');
+  if(v.readyState>=2&&v.videoWidth){const sc=Math.min(1,1000/v.videoWidth),t=await decode(v,Math.round(v.videoWidth*sc),Math.round(v.videoHeight*sc));
+    if(t&&(t!==lastV||Date.now()-lastT>2500)){lastV=t;lastT=Date.now();if(handleScan(t)){stopCam();$('scanp').hidden=true;return}}}
+  timer=setTimeout(loop,160);
+}
+async function startCam(){
+  $('scanp').hidden=false;sm('Starting camera...');
+  try{
+    if(!detector)throw new Error('nodetector');
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('nomedia');
+    const gum=c=>navigator.mediaDevices.getUserMedia(c);
+    try{stream=await gum({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false})}
+    catch(e1){if(e1&&e1.name==='NotAllowedError')throw e1;stream=await gum({video:true,audio:false})}
+    const v=$('sv');v.muted=true;v.srcObject=stream;await v.play();sm('Point the camera at a staging area or case QR code.');loop();
+  }catch(e){stopCam();sm((e&&e.name==='NotAllowedError'?'Camera blocked. Allow it for this site in Chrome (lock icon, Permissions), or open the page in Chrome itself. ':e&&e.message==='nodetector'?'This browser has no built-in QR reader (Chrome on Android has one). ':'Live camera is not available here. ')+(detector?'Use Take photo instead.':'Type or scan the code into the search box.'))}
+}
+$('scan').onclick=startCam;
+$('sclose').onclick=()=>{stopCam();$('scanp').hidden=true};
+/* Photo fallback: opens the phone camera app, then reads the picture at several sizes */
+$('ph').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  if(!detector){sm('This browser has no built-in QR reader. Use Chrome on Android, or type the code into the search box.');return}
+  sm('Reading photo...');
+  try{const bm=await createImageBitmap(f);let t=null;
+    for(const m of [2200,1400,900]){const sc=Math.min(1,m/Math.max(bm.width,bm.height));t=await decode(bm,Math.round(bm.width*sc),Math.round(bm.height*sc));if(t)break}
+    if(!t){sm('No QR code found. Move closer so the code fills about half the photo and try again.');return}
+    if(handleScan(t))$('scanp').hidden=true;
+  }catch(err){sm('Could not read that photo.')}
+};
+
+/* ===== 8b. ASSIGN A CASE TO A STAGE ===== */
+$('ast').innerHTML='<option value="">Choose stage</option>'+STAGES.map(s=>'<option>'+s+'</option>').join('');
+function assign(){
+  try{
+    const cs=$('acs').value.trim(),reg=$('areg').value.trim(),stg=$('ast').value;
+    if(!cs&&!reg){say('Type or scan a case number or a register.');return}
+    if(!stg){say('Choose the stage the case is in.');return}
+    const same=(a,b)=>String(a??'').trim().toUpperCase()===String(b??'').trim().toUpperCase();
+    /* case only = every register of that case; register only = that register; both = rows matching both */
+    const rows=DATA.filter(r=>(!cs||same(r.cs,cs))&&(!reg||same(r.reg,reg)));
+    let msg;
+    if(rows.length){rows.forEach(r=>r.stage=stg);msg='Updated '+rows.length+' row'+(rows.length>1?'s':'')+'.'}
+    else{DATA.push({stage:stg,cs:cs||'(no case)',reg:reg||null,part:null,desc:null,qty:0,wt:0});msg='It was not in the data, so it was added as a new row.'}
+    try{localStorage.setItem('stagingData',JSON.stringify(DATA))}catch(e){/* storage full or blocked: ignore */}
+    sel=stg;hl=rows.length?rows[0].cs:(cs||null);$('q').value='';render();
+    $('acs').value='';$('areg').value=''; /* stage stays selected for the next case */
+    if(navigator.vibrate)navigator.vibrate(60);
+    say((cs?'Case '+cs+(reg?' (register '+reg+')':''):'Register '+reg)+' assigned to '+stg+'. '+msg);
+  }catch(err){say('Could not assign: '+err.message)}
+}
+$('asgn').onclick=assign;
+$('acs').onkeydown=$('areg').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();assign()}};
+$('asgscan').onclick=startCam;
+
+/* ===== 9. START: restore saved data, otherwise show sample data ===== */
+try{
+  const saved=JSON.parse(localStorage.getItem('stagingData')||'null');
+  if(Array.isArray(saved)&&saved.length){DATA=saved.map(r=>({...r,stage:stageName(r.stage)||'Unassigned'}));say('Restored your last data ('+nf(saved.length)+' rows).');render()}else sample();
+}catch(e){sample()}
+
+/* ===== 10. OFFLINE CACHE (optional): registers sw.js when it sits next to this file on http(s) ===== */
+if('serviceWorker' in navigator&&location.protocol.indexOf('http')===0)navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
